@@ -113,7 +113,7 @@ static pthread_t dlt_housekeeperthread_handle;
 
 /* Sync housekeeper thread start */
 pthread_mutex_t dlt_housekeeper_running_mutex = PTHREAD_MUTEX_INITIALIZER;
-pthread_cond_t dlt_housekeeper_running_cond = PTHREAD_COND_INITIALIZER;
+pthread_cond_t dlt_housekeeper_running_cond;
 
 /* calling dlt_user_atexit_handler() second time fails with error message */
 static int atexit_registered = 0;
@@ -221,7 +221,7 @@ static void dlt_user_trace_network_segmented_thread_segmenter(s_segmented_data *
 #endif
 
 static DltReturnValue dlt_user_log_write_string_utils_attr(DltContextData *log, const char *text, const enum StringType type, const char *name, bool with_var_info);
-static DltReturnValue dlt_user_log_write_sized_string_utils_attr(DltContextData *log, const char *text, uint16_t length, const enum StringType type, const char *name, bool with_var_info);
+static DltReturnValue dlt_user_log_write_sized_string_utils_attr(DltContextData *log, const char *text, size_t length, const enum StringType type, const char *name, bool with_var_info);
 
 
 static DltReturnValue dlt_unregister_app_util(bool force_sending_messages);
@@ -2606,7 +2606,7 @@ DltReturnValue dlt_user_log_write_sized_constant_utf8_string_attr(DltContextData
     return is_verbose_mode(dlt_user.verbose_mode, log) ? dlt_user_log_write_sized_utf8_string_attr(log, text, length, name) : DLT_RETURN_OK;
 }
 
-static DltReturnValue dlt_user_log_write_sized_string_utils_attr(DltContextData *log, const char *text, uint16_t length, const enum StringType type, const char *name, bool with_var_info)
+static DltReturnValue dlt_user_log_write_sized_string_utils_attr(DltContextData *log, const char *text, size_t length, const enum StringType type, const char *name, bool with_var_info)
 {
     if ((log == NULL) || (text == NULL))
         return DLT_RETURN_WRONG_PARAMETER;
@@ -2618,7 +2618,7 @@ static DltReturnValue dlt_user_log_write_sized_string_utils_attr(DltContextData 
 
     const uint16_t name_size = (name != NULL) ? strlen(name)+1 : 0;
 
-    uint16_t arg_size = (uint16_t) (length + 1);
+    size_t arg_size = (size_t) (length + 1);
 
     size_t new_log_size = log->size + arg_size + sizeof(uint16_t);
 
@@ -2643,13 +2643,13 @@ static DltReturnValue dlt_user_log_write_sized_string_utils_attr(DltContextData 
         ret = DLT_RETURN_USER_BUFFER_FULL;
 
         /* Re-calculate arg_size */
-        arg_size = (uint16_t) (dlt_user.log_buf_len - log->size - sizeof(uint16_t));
+        arg_size = (size_t) (dlt_user.log_buf_len - log->size - sizeof(uint16_t));
 
         size_t min_payload_str_truncate_msg = log->size + str_truncate_message_length + sizeof(uint16_t);
 
         if (is_verbose_mode(dlt_user.verbose_mode, log)) {
             min_payload_str_truncate_msg += sizeof(uint32_t);
-            arg_size -= (uint16_t) sizeof(uint32_t);
+            arg_size -= (size_t) sizeof(uint32_t);
             if (with_var_info) {
                 min_payload_str_truncate_msg += sizeof(uint16_t) + name_size;
                 arg_size -= sizeof(uint16_t) + name_size;
@@ -2687,7 +2687,7 @@ static DltReturnValue dlt_user_log_write_sized_string_utils_attr(DltContextData 
             }
 
             max_payload_str_msg -= reduce_size;
-            arg_size -= (uint16_t) reduce_size;
+            arg_size -= (size_t) reduce_size;
         }
     }
 
@@ -2766,7 +2766,7 @@ static DltReturnValue dlt_user_log_write_string_utils_attr(DltContextData *log, 
     if ((log == NULL) || (text == NULL))
         return DLT_RETURN_WRONG_PARAMETER;
 
-    uint16_t length = (uint16_t) strlen(text);
+    size_t length = strlen(text);
     return dlt_user_log_write_sized_string_utils_attr(log, text, length, type, name, with_var_info);
 }
 
@@ -3276,7 +3276,7 @@ DltReturnValue dlt_user_trace_network_segmented(DltContext *handle,
         return DLT_RETURN_ERROR;
 
     /* Send as normal trace if possible */
-    if (header_len + payload_len + (uint16_t) sizeof(uint16_t) < dlt_user.log_buf_len)
+    if (header_len + payload_len + sizeof(uint16_t) < dlt_user.log_buf_len)
         return dlt_user_trace_network(handle, nw_trace_type, header_len, header, payload_len, payload);
 
     /* Allocate Memory */
@@ -3406,7 +3406,7 @@ DltReturnValue dlt_user_trace_network_truncated(DltContext *handle,
             header_len = 0;
 
         /* If truncation is allowed, check if we must do it */
-        if ((allow_truncate > 0) && ((header_len + payload_len + (uint16_t) sizeof(uint16_t)) > dlt_user.log_buf_len)) {
+        if ((allow_truncate > 0) && ((header_len + payload_len + sizeof(uint16_t)) > dlt_user.log_buf_len)) {
             /* Identify as truncated */
             if (dlt_user_log_write_string(&log, DLT_TRACE_NW_TRUNCATED) < DLT_RETURN_OK) {
                 dlt_user_free_buffer(&(log.buffer));
@@ -3745,7 +3745,7 @@ void dlt_user_housekeeperthread_function(void *ptr)
     struct timespec ts;
     bool in_loop = true;
     int signal_status = 0;
-    bool* dlt_housekeeper_running = (bool*)ptr;
+    atomic_bool* dlt_housekeeper_running = (atomic_bool*)ptr;
 
 #ifdef __ANDROID_API__
     sigset_t set;
@@ -4958,9 +4958,18 @@ void dlt_user_test_corrupt_message_size(int enable, int16_t size)
 int dlt_start_threads()
 {
     struct timespec time_to_wait;
-    struct timeval now;
+    struct timespec now;
     int signal_status;
-    bool dlt_housekeeper_running;
+    atomic_bool dlt_housekeeper_running = false;
+
+    /*
+    * Configure the condition varibale to use CLOCK_MONOTONIC.
+    * This makes sure we're protected against changes in the system clock
+    */
+    pthread_condattr_t attr;
+    pthread_condattr_init(&attr);
+    pthread_condattr_setclock(&attr, CLOCK_MONOTONIC);
+    pthread_cond_init(&dlt_housekeeper_running_cond, &attr);
 
     if (pthread_create(&(dlt_housekeeperthread_handle),
                        0,
@@ -4970,24 +4979,41 @@ int dlt_start_threads()
         return -1;
     }
 
-    /* wait at most 5s */
-    gettimeofday(&now,NULL);
-    time_to_wait.tv_sec = now.tv_sec+5;
+    clock_gettime(CLOCK_MONOTONIC, &now);
+    /* wait at most 10s */
+    time_to_wait.tv_sec = now.tv_sec + 10;
     time_to_wait.tv_nsec = 0;
 
-     /* 
-     * wait until the house keeper is up and running
-     * use the predicate to protect against spurious wake ups
-     * */
-    while (!dlt_housekeeper_running) {
+    /*
+    * wait until the house keeper is up and running
+    * Even though the condition variable and the while are
+    * using the same time out the while loop is not a no op.
+    * This is due to the fact that the pthread_cond_timedwait
+    * can be woken before time is up and dlt_housekeeper_running is not true yet.
+    * (spurious wakeup)
+    * To protect against this, a while loop with a timeout is added
+    * */
+    while (!dlt_housekeeper_running 
+        && now.tv_sec <= time_to_wait.tv_sec) {
         signal_status = pthread_cond_timedwait(
-            &dlt_housekeeper_running_cond, 
-            &dlt_housekeeper_running_mutex,
-            &time_to_wait);
-        if (signal_status != 0) {
-            dlt_log(LOG_CRIT, "Failed to wait for house keeper thread!\n");
+                &dlt_housekeeper_running_cond,
+                &dlt_housekeeper_running_mutex,
+                &time_to_wait);
+
+        /* otherwise it might be a spurious wakeup, try again until the time is over */
+        if (signal_status == 0) {
+            break;
         }
-    }
+
+        clock_gettime(CLOCK_MONOTONIC, &now);
+     }
+
+     if (signal_status != 0 && !dlt_housekeeper_running) {
+         dlt_log(LOG_CRIT, "Failed to wait for house keeper thread!\n");
+         dlt_stop_threads();
+         return -1;
+     }
+
 #ifdef DLT_NETWORK_TRACE_ENABLE
     /* Start the segmented thread */
     if (pthread_create(&(dlt_user.dlt_segmented_nwt_handle), NULL,
